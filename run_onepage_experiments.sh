@@ -3,7 +3,7 @@
 # Runs one-page experiments across PadL values and monitored pages
 
 PADL_VALUES=(1)
-MON_PAGES=($(seq 0 94))
+MON_PAGES=(0)
 IN_BASE="datasets"
 
 for PADL in "${PADL_VALUES[@]}"; do
