@@ -12,8 +12,9 @@ def format_float_for_name(x):
     """
     Produce a filesystem-friendly float string for dataset names.
     Examples:
-      0.012 -> "0p012"
-      0.04  -> "0p04"
+      0.005 -> "0p005"
+      0.01  -> "0p01"
+      0.02  -> "0p02"
       1.0   -> "1"
     """
     s = "{:.10g}".format(float(x))
@@ -22,13 +23,13 @@ def format_float_for_name(x):
     return s
 
 
-def build_output_path(padl, pin, pout, l_value, g_value):
-    pin_s = format_float_for_name(pin)
-    pout_s = format_float_for_name(pout)
+def build_output_path(padl, p_in, p_out, l_value, g_value):
+    p_in_s = format_float_for_name(p_in)
+    p_out_s = format_float_for_name(p_out)
     return (
         f"datasets/CW_tamaraw_padl{padl}"
-        f"_pin{pin_s}"
-        f"_pout{pout_s}"
+        f"_pin{p_in_s}"
+        f"_pout{p_out_s}"
         f"_L{l_value}"
         f"_G{g_value}.npz"
     )
@@ -101,7 +102,7 @@ def defend_one_trace(trace, padl):
     return defended_seq, total_orig, total_def
 
 
-def defend_all_traces(padl=100, pin=0.012, pout=0.04, l_value=0, g_value=0):
+def defend_all_traces(padl=100, p_in=0.012, p_out=0.04, l_value=0, g_value=0):
     d = np.load(IN_PATH)
     X = d["X"]
     y = d["y"]
@@ -109,7 +110,7 @@ def defend_all_traces(padl=100, pin=0.012, pout=0.04, l_value=0, g_value=0):
     N, T = X.shape
     X_def = np.zeros_like(X, dtype=np.float64)
 
-    set_parameters(pin=pin, pout=pout, l=l_value, g=g_value)
+    set_parameters(p_in=p_in, p_out=p_out, l=l_value, g=g_value)
     active_params = get_parameters()
 
     total_orig = 0
@@ -117,10 +118,10 @@ def defend_all_traces(padl=100, pin=0.012, pout=0.04, l_value=0, g_value=0):
 
     print("Active Tamaraw parameters:")
     print(f"  padL = {padl}")
-    print(f"  pin  = {active_params['pin']}")
-    print(f"  pout = {active_params['pout']}")
-    print(f"  L    = {active_params['L']}")
-    print(f"  G    = {active_params['G']}")
+    print(f"  p_in = {active_params['p_in']}")
+    print(f"  p_out = {active_params['p_out']}")
+    print(f"  L = {active_params['L']}")
+    print(f"  G = {active_params['G']}")
 
     for i in range(N):
         trace = X[i]
@@ -138,8 +139,8 @@ def defend_all_traces(padl=100, pin=0.012, pout=0.04, l_value=0, g_value=0):
 
     out_path = build_output_path(
         padl=padl,
-        pin=pin,
-        pout=pout,
+        p_in=p_in,
+        p_out=p_out,
         l_value=l_value,
         g_value=g_value,
     )
@@ -154,8 +155,8 @@ def defend_all_traces(padl=100, pin=0.012, pout=0.04, l_value=0, g_value=0):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--padl", type=int, default=100)
-    parser.add_argument("--pin", type=float, default=0.012)
-    parser.add_argument("--pout", type=float, default=0.04)
+    parser.add_argument("--p_in", type=float, default=0.012)
+    parser.add_argument("--p_out", type=float, default=0.04)
     parser.add_argument("--L", type=int, default=0)
     parser.add_argument("--G", type=int, default=0)
 
@@ -163,8 +164,8 @@ if __name__ == "__main__":
 
     defend_all_traces(
         padl=args.padl,
-        pin=args.pin,
-        pout=args.pout,
+        p_in=args.p_in,
+        p_out=args.p_out,
         l_value=args.L,
         g_value=args.G,
     )
