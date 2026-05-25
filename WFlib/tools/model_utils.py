@@ -33,7 +33,7 @@ def knn_monitor(net, device, memory_data_loader, test_data_loader, num_classes, 
     with torch.no_grad():
         # Generate feature bank
         for data, target in memory_data_loader:
-            feature = net(data.to(device))
+            feature = net(data.to(device, non_blocking=True))
             feature = F.normalize(feature, dim=1)
             feature_bank.append(feature)
             feature_labels.append(target)
@@ -43,7 +43,8 @@ def knn_monitor(net, device, memory_data_loader, test_data_loader, num_classes, 
 
         # Loop through test data to predict the label by weighted kNN search
         for data, target in test_data_loader:
-            data, target = data.to(device), target.to(device)
+            data = data.to(device, non_blocking=True)
+            target = target.to(device, non_blocking=True)
             feature = net(data)
             feature = F.normalize(feature, dim=1)
             pred_labels = knn_predict(feature, feature_bank, feature_labels, num_classes, k, t)
@@ -55,6 +56,7 @@ def knn_monitor(net, device, memory_data_loader, test_data_loader, num_classes, 
     y_pred = np.concatenate(y_pred).flatten()
     
     return y_true, y_pred
+
 
 def knn_predict(feature, feature_bank, feature_labels, classes, knn_k, knn_t):
     """
@@ -83,6 +85,7 @@ def knn_predict(feature, feature_bank, feature_labels, classes, knn_k, knn_t):
     
     return pred_labels
 
+
 def fast_count_burst(arr):
     """
     Count bursts of continuous values in an array.
@@ -102,6 +105,7 @@ def fast_count_burst(arr):
     adjusted_lengths = segment_lengths * segment_signs
     
     return adjusted_lengths
+
 
 def model_train(
     model,
@@ -143,8 +147,9 @@ def model_train(
         sum_count = 0
         
         for index, cur_data in enumerate(train_iter):
-            cur_X, cur_y = cur_data[0].to(device), cur_data[1].to(device)
-            optimizer.zero_grad()
+            cur_X = cur_data[0].to(device, non_blocking=True)
+            cur_y = cur_data[1].to(device, non_blocking=True)
+            optimizer.zero_grad(set_to_none=True)
             outs = model(cur_X)
 
             if loss_name == "TripletMarginLoss":
@@ -155,7 +160,7 @@ def model_train(
             elif loss_name == "MultiCrossEntropyLoss":
                 loss = 0
                 cur_indices = torch.nonzero(cur_y)
-                cur_indices = cur_indices[:,1].view(-1, num_tabs)
+                cur_indices = cur_indices[:, 1].view(-1, num_tabs)
                 for ct in range(num_tabs):
                     loss_ct = criterion(outs[:, ct], cur_indices[:, ct])
                     loss = loss + loss_ct
@@ -181,19 +186,20 @@ def model_train(
                 valid_true = []
 
                 for index, cur_data in enumerate(valid_iter):
-                    cur_X, cur_y = cur_data[0].to(device), cur_data[1].to(device)
+                    cur_X = cur_data[0].to(device, non_blocking=True)
+                    cur_y = cur_data[1].to(device, non_blocking=True)
                     outs = model(cur_X)
                     
                     if loss_name in ["BCEWithLogitsLoss", "MultiLabelSoftMarginLoss"]:
                         cur_pred = torch.sigmoid(outs)
                     elif loss_name == "CrossEntropyLoss":
-                        cur_pred = torch.argsort(outs, dim=1, descending=True)[:,0]
+                        cur_pred = torch.argsort(outs, dim=1, descending=True)[:, 0]
                     elif loss_name == "MultiCrossEntropyLoss":
                         cur_indices = torch.argmax(outs, dim=-1).cpu()
                         cur_pred = torch.zeros((cur_indices.shape[0], num_classes))
                         for cur_tab in range(cur_indices.shape[1]):
                             row_indices = torch.arange(cur_pred.shape[0])
-                            cur_pred[row_indices,cur_indices[:,cur_tab]] += 1
+                            cur_pred[row_indices, cur_indices[:, cur_tab]] += 1
                     else:
                         raise ValueError(f"Loss function {loss_name} is not matched.")
 
@@ -213,6 +219,7 @@ def model_train(
         print(f"best epoch {best_epoch}: {save_metric}={metric_best_value}")
         if lradj != "None":
             scheduler.step()
+
 
 def model_eval(
         model, 
@@ -234,10 +241,11 @@ def model_eval(
             y_true = []
 
             for index, cur_data in enumerate(test_iter):
-                cur_X, cur_y = cur_data[0].to(device), cur_data[1].to(device)
+                cur_X = cur_data[0].to(device, non_blocking=True)
+                cur_y = cur_data[1].to(device, non_blocking=True)
                 outs = model(cur_X)
                 if num_tabs == 1:
-                    cur_pred = torch.argsort(outs, dim=1, descending=True)[:,0]
+                    cur_pred = torch.argsort(outs, dim=1, descending=True)[:, 0]
                 else:
                     if len(outs.shape) <= 2:
                         cur_pred = torch.sigmoid(outs)
@@ -246,7 +254,7 @@ def model_eval(
                         cur_pred = torch.zeros((cur_indices.shape[0], num_classes))
                         for cur_tab in range(cur_indices.shape[1]):
                             row_indices = torch.arange(cur_pred.shape[0])
-                            cur_pred[row_indices,cur_indices[:,cur_tab]] += 1
+                            cur_pred[row_indices, cur_indices[:, cur_tab]] += 1
 
                 y_pred.append(cur_pred.cpu().numpy())
                 y_true.append(cur_y.cpu().numpy())
@@ -269,7 +277,8 @@ def model_eval(
             y_true = []
 
             for index, cur_data in enumerate(test_iter):
-                cur_X, cur_y = cur_data[0].to(device), cur_data[1].to(device)
+                cur_X = cur_data[0].to(device, non_blocking=True)
+                cur_y = cur_data[1].to(device, non_blocking=True)
                 embs = model(cur_X).cpu().numpy()
                 cur_y = cur_y.cpu().numpy()
 
@@ -294,6 +303,7 @@ def model_eval(
 
     with open(out_file, "w") as fp:
         json.dump(result, fp, indent=4)
+
 
 def info_nce_loss(features, batch_size, device):
     """
@@ -322,6 +332,7 @@ def info_nce_loss(features, batch_size, device):
 
     return logits, labels
 
+
 def pretrian_accuracy(output, target):
     """
     Compute the accuracy over the top predictions.
@@ -342,6 +353,7 @@ def pretrian_accuracy(output, target):
         res = correct_k.mul_(100.0 / batch_size)
 
         return res.cpu().numpy()[0]
+
 
 def model_pretrian(model, optimizer, train_iter, train_epochs, out_file, batch_size, device):
     """
@@ -366,9 +378,9 @@ def model_pretrian(model, optimizer, train_iter, train_epochs, out_file, batch_s
         for index, cur_data in enumerate(train_iter):
             cur_X, cur_y = cur_data[0], cur_data[1]
             cur_X = torch.cat(cur_X, dim=0)
-            cur_X = cur_X.view(cur_X.size(0), 1, cur_X.size(1)).float().to(device)
+            cur_X = cur_X.view(cur_X.size(0), 1, cur_X.size(1)).float().to(device, non_blocking=True)
 
-            optimizer.zero_grad()
+            optimizer.zero_grad(set_to_none=True)
             features = model(cur_X)
             logits, labels = info_nce_loss(features, batch_size, device)
             loss = criterion(logits, labels)

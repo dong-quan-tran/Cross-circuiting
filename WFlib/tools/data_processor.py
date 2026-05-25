@@ -97,10 +97,28 @@ def load_iter(X, y, batch_size, is_train=True, num_workers=8, weight_sample=Fals
             samples_weight, len(samples_weight)
         )
         dataset = torch.utils.data.TensorDataset(X, y)
-        return torch.utils.data.DataLoader(dataset, batch_size=batch_size, sampler=sampler, num_workers=num_workers)
+        return torch.utils.data.DataLoader(
+            dataset, 
+            batch_size=batch_size, 
+            sampler=sampler, 
+            num_workers=num_workers,
+            pin_memory=True,  # NEW: Faster GPU transfer
+            prefetch_factor=4,  # NEW: Prefetch 4 batches per worker
+            persistent_workers=True  # NEW: Keep workers alive
+        )
+    
     dataset = torch.utils.data.TensorDataset(X, y)
-    return torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=is_train, drop_last=is_train, num_workers=num_workers)
-
+    return torch.utils.data.DataLoader(
+        dataset, 
+        batch_size=batch_size, 
+        shuffle=is_train, 
+        drop_last=is_train, 
+        num_workers=num_workers,
+        pin_memory=True,  # NEW: Faster GPU transfer
+        prefetch_factor=4,  # NEW: Prefetch 4 batches per worker
+        persistent_workers=True  # NEW: Keep workers alive
+    )
+    
 def extract_temporal_feature(X, feat_length=1000):
     abs_X = np.absolute(X)
     new_X = []
