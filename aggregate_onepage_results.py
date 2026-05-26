@@ -1,20 +1,15 @@
 import json
 import csv
+import argparse
 from pathlib import Path
-
-# Configuration for this run
-TAG = "padl1_pin0p005_pout0p005_L0_G0"
-
-# Directories
-BASE_DIR = Path(".")
-LOGS_DIR = BASE_DIR / "logs"
-OUT_CSV = BASE_DIR / f"onepage_summary_{TAG}.csv"
 
 # Models we expect
 MODELS = ["DF", "TikTok", "VarCNN", "RF"]
-
-# Metric keys as stored in result.json
 METRIC_KEYS = ["Accuracy", "Precision", "Recall", "F1-score"]
+
+# Base directories
+BASE_DIR = Path(".")
+LOGS_DIR = BASE_DIR / "logs"
 
 
 def find_result_files_for_tag(tag: str):
@@ -26,7 +21,6 @@ def find_result_files_for_tag(tag: str):
     """
     results = {m: [] for m in MODELS}
 
-    # Pattern: logs/CW_tam_<TAG>_page*
     pattern = f"CW_tam_{tag}_page"
     for page_dir in LOGS_DIR.glob(pattern + "*"):
         if not page_dir.is_dir():
@@ -94,13 +88,41 @@ def write_csv(rows, out_path: Path):
             writer.writerow(r)
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Aggregate one-page result.json files into a CSV summary."
+    )
+    parser.add_argument(
+        "--tag",
+        required=True,
+        help="Defended dataset tag, e.g. padl1_pin0p005_pout0p005_L0_G0",
+    )
+    parser.add_argument(
+        "--out_csv",
+        default=None,
+        help=(
+            "Output CSV path. If not provided, defaults to "
+            "onepage_summary_<TAG>.csv in the current directory."
+        ),
+    )
+    return parser.parse_args()
+
+
 def main():
-    rows = aggregate_results(TAG)
+    args = parse_args()
+    tag = args.tag
+
+    if args.out_csv is not None:
+        out_csv = Path(args.out_csv)
+    else:
+        out_csv = BASE_DIR / f"onepage_summary_{tag}.csv"
+
+    rows = aggregate_results(tag)
     if not rows:
-        print(f"No aggregated results for tag={TAG}")
+        print(f"No aggregated results for tag={tag}")
         return
-    write_csv(rows, OUT_CSV)
-    print(f"Wrote {len(rows)} rows to {OUT_CSV}")
+    write_csv(rows, out_csv)
+    print(f"Wrote {len(rows)} rows to {out_csv}")
 
 
 if __name__ == "__main__":
