@@ -34,7 +34,9 @@
 #       tam_valid.npz
 #       tam_test.npz
 
-set -euo pipefail
+# Relax strict error handling so one failing model/page does not kill the whole run
+# set -euo pipefail
+set -u
 
 if [ $# -lt 1 ]; then
     echo "Usage: bash run_onepage_experiments.sh <TAG>"
@@ -92,7 +94,7 @@ for PAGE_FILE in "${PAGE_FILES[@]}"; do
     # Split
     python exp/dataset_process/dataset_split.py \
         --dataset "${DATASET_NAME}" \
-        2>&1 | tee "${LOG_DIR}/${DATASET_NAME}_split.log"
+        2>&1 | tee "${LOG_DIR}/${DATASET_NAME}_split.log" || true
 
     # Generate TAM for RF
     for split in train valid test; do
@@ -100,58 +102,58 @@ for PAGE_FILE in "${PAGE_FILES[@]}"; do
             --dataset "${DATASET_NAME}" \
             --seq_len 5000 \
             --in_file "${split}" \
-            2>&1 | tee "${LOG_DIR}/${DATASET_NAME}_tam_${split}.log"
+            2>&1 | tee "${LOG_DIR}/${DATASET_NAME}_tam_${split}.log" || true
     done
 
-        # DF - INCREASE FROM 128 TO 512
+    # DF - batch_size 512 / test 1024
     python -u exp/train.py --dataset "${DATASET_NAME}" --model DF \
         --device cuda:0 --feature DIR --seq_len 5000 \
         --train_epochs 30 --batch_size 512 --learning_rate 2e-3 \
         --optimizer Adamax \
         --eval_metrics Accuracy Precision Recall F1-score \
         --save_metric F1-score --save_name max_f1 \
-        2>&1 | tee "${LOG_DIR}/${DATASET_NAME}_DF_train.log"
+        2>&1 | tee "${LOG_DIR}/${DATASET_NAME}_DF_train.log" || true
 
     python -u exp/test.py --dataset "${DATASET_NAME}" --model DF \
         --device cuda:0 --feature DIR --seq_len 5000 \
         --batch_size 1024 \
         --eval_metrics Accuracy Precision Recall F1-score \
         --load_name max_f1 \
-        2>&1 | tee "${LOG_DIR}/${DATASET_NAME}_DF_test.log"
+        2>&1 | tee "${LOG_DIR}/${DATASET_NAME}_DF_test.log" || true
 
-    # Tik-Tok - INCREASE FROM 128 TO 512
+    # TikTok - batch_size 512 / test 1024
     python -u exp/train.py --dataset "${DATASET_NAME}" --model TikTok \
         --device cuda:0 --feature DT --seq_len 5000 \
         --train_epochs 30 --batch_size 512 --learning_rate 2e-3 \
         --optimizer Adamax \
         --eval_metrics Accuracy Precision Recall F1-score \
         --save_metric F1-score --save_name max_f1 \
-        2>&1 | tee "${LOG_DIR}/${DATASET_NAME}_TikTok_train.log"
+        2>&1 | tee "${LOG_DIR}/${DATASET_NAME}_TikTok_train.log" || true
 
     python -u exp/test.py --dataset "${DATASET_NAME}" --model TikTok \
         --device cuda:0 --feature DT --seq_len 5000 \
         --batch_size 1024 \
         --eval_metrics Accuracy Precision Recall F1-score \
         --load_name max_f1 \
-        2>&1 | tee "${LOG_DIR}/${DATASET_NAME}_TikTok_test.log"
+        2>&1 | tee "${LOG_DIR}/${DATASET_NAME}_TikTok_test.log" || true
 
-    # Var-CNN - INCREASE FROM 50 TO 256
+    # VarCNN - batch_size 256 / test 512
     python -u exp/train.py --dataset "${DATASET_NAME}" --model VarCNN \
         --device cuda:0 --feature DT2 --seq_len 5000 \
-        --train_epochs 30 --batch_size 256 --learning_rate 1e-3 \
+        --train_epochs 30 --batch_size 512 --learning_rate 1e-3 \
         --optimizer Adam \
         --eval_metrics Accuracy Precision Recall F1-score \
         --save_metric F1-score --save_name max_f1 \
-        2>&1 | tee "${LOG_DIR}/${DATASET_NAME}_VarCNN_train.log"
+        2>&1 | tee "${LOG_DIR}/${DATASET_NAME}_VarCNN_train.log" || true
 
     python -u exp/test.py --dataset "${DATASET_NAME}" --model VarCNN \
         --device cuda:0 --feature DT2 --seq_len 5000 \
-        --batch_size 512 \
+        --batch_size 1024 \
         --eval_metrics Accuracy Precision Recall F1-score \
         --load_name max_f1 \
-        2>&1 | tee "${LOG_DIR}/${DATASET_NAME}_VarCNN_test.log"
+        2>&1 | tee "${LOG_DIR}/${DATASET_NAME}_VarCNN_test.log" || true
 
-    # RF - INCREASE FROM 200 TO 512
+    # RF - batch_size 512 / test 1024
     python -u exp/train.py --dataset "${DATASET_NAME}" --model RF \
         --device cuda:0 --train_file tam_train --valid_file tam_valid \
         --feature TAM --seq_len 1800 \
@@ -159,7 +161,7 @@ for PAGE_FILE in "${PAGE_FILES[@]}"; do
         --optimizer Adam \
         --eval_metrics Accuracy Precision Recall F1-score \
         --save_metric F1-score --save_name max_f1 \
-        2>&1 | tee "${LOG_DIR}/${DATASET_NAME}_RF_train.log"
+        2>&1 | tee "${LOG_DIR}/${DATASET_NAME}_RF_train.log" || true
 
     python -u exp/test.py --dataset "${DATASET_NAME}" --model RF \
         --device cuda:0 --test_file tam_test \
@@ -167,11 +169,9 @@ for PAGE_FILE in "${PAGE_FILES[@]}"; do
         --batch_size 1024 \
         --eval_metrics Accuracy Precision Recall F1-score \
         --load_name max_f1 \
-        2>&1 | tee "${LOG_DIR}/${DATASET_NAME}_RF_test.log"
+        2>&1 | tee "${LOG_DIR}/${DATASET_NAME}_RF_test.log" || true
 
     # Move the generated per-page working directory into the *_pages archive.
-    # If a previous archived copy exists for the same page, remove it first
-    # so reruns do not fail or produce nested directories.
     if [ -d "${PAGE_WORK_DIR}" ]; then
         rm -rf "${PAGE_ARCHIVE_DIR}"
         mv "${PAGE_WORK_DIR}" "${PAGES_DIR}/"
