@@ -117,7 +117,7 @@ for PAGE_FILE in "${PAGE_FILES[@]}"; do
     python -u exp/test.py --dataset "${DATASET_NAME}" --model DF \
         --device cuda:2 --feature DIR --seq_len 5000 \
         --batch_size 1024 \
-        --eval_metrics Accuracy Precision Recall F1-score \
+        --eval_metrics Accuracy Precision Recall F1-score TPR FPR \
         --load_name max_f1 \
         2>&1 | tee "${LOG_DIR}/${DATASET_NAME}_DF_test.log" || true
 
@@ -131,11 +131,11 @@ for PAGE_FILE in "${PAGE_FILES[@]}"; do
         2>&1 | tee "${LOG_DIR}/${DATASET_NAME}_TikTok_train.log" || true
 
     python -u exp/test.py --dataset "${DATASET_NAME}" --model TikTok \
-        --device cuda:2 --feature DT --seq_len 5000 \
-        --batch_size 1024 \
-        --eval_metrics Accuracy Precision Recall F1-score \
-        --load_name max_f1 \
-        2>&1 | tee "${LOG_DIR}/${DATASET_NAME}_TikTok_test.log" || true
+    	--device cuda:2 --feature DT --seq_len 5000 \
+    	--batch_size 1024 \
+    	--eval_metrics Accuracy Precision Recall F1-score TPR FPR \
+    	--load_name max_f1 \
+    	2>&1 | tee "${LOG_DIR}/${DATASET_NAME}_TikTok_test.log" || true
 
     # VarCNN - batch_size 256 / test 512
     python -u exp/train.py --dataset "${DATASET_NAME}" --model VarCNN \
@@ -147,11 +147,11 @@ for PAGE_FILE in "${PAGE_FILES[@]}"; do
         2>&1 | tee "${LOG_DIR}/${DATASET_NAME}_VarCNN_train.log" || true
 
     python -u exp/test.py --dataset "${DATASET_NAME}" --model VarCNN \
-        --device cuda:2 --feature DT2 --seq_len 5000 \
-        --batch_size 1024 \
-        --eval_metrics Accuracy Precision Recall F1-score \
-        --load_name max_f1 \
-        2>&1 | tee "${LOG_DIR}/${DATASET_NAME}_VarCNN_test.log" || true
+    	--device cuda:2 --feature DT2 --seq_len 5000 \
+    	--batch_size 1024 \
+    	--eval_metrics Accuracy Precision Recall F1-score TPR FPR \
+    	--load_name max_f1 \
+    	2>&1 | tee "${LOG_DIR}/${DATASET_NAME}_VarCNN_test.log" || true
 
     # RF - batch_size 512 / test 1024
     python -u exp/train.py --dataset "${DATASET_NAME}" --model RF \
@@ -164,12 +164,12 @@ for PAGE_FILE in "${PAGE_FILES[@]}"; do
         2>&1 | tee "${LOG_DIR}/${DATASET_NAME}_RF_train.log" || true
 
     python -u exp/test.py --dataset "${DATASET_NAME}" --model RF \
-        --device cuda:2 --test_file tam_test \
-        --feature TAM --seq_len 1800 \
-        --batch_size 1024 \
-        --eval_metrics Accuracy Precision Recall F1-score \
-        --load_name max_f1 \
-        2>&1 | tee "${LOG_DIR}/${DATASET_NAME}_RF_test.log" || true
+    	--device cuda:2 --test_file tam_test \
+    	--feature TAM --seq_len 1800 \
+   	--batch_size 1024 \
+   	--eval_metrics Accuracy Precision Recall F1-score TPR FPR \
+    	--load_name max_f1 \
+    	2>&1 | tee "${LOG_DIR}/${DATASET_NAME}_RF_test.log" || true
 
     # Move the generated per-page working directory into the *_pages archive.
     if [ -d "${PAGE_WORK_DIR}" ]; then
