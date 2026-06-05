@@ -1,1 +1,0 @@
-filename,legacy_padl,p_in_interval,p_out_interval,L,G,bandwidth_overhead_fraction,bandwidth_overhead_percent,latency_overhead_fraction,latency_overhead_percent,avg_orig_duration_sec,avg_def_duration_sec,num_traces,total_orig_packets,total_def_packets
