@@ -3,32 +3,65 @@ import csv
 import argparse
 from pathlib import Path
 
-# Models we expect
 MODELS = ["DF", "TikTok", "VarCNN", "RF"]
-METRIC_KEYS = ["Accuracy", "Precision", "Recall", "F1-score"]
+METRIC_KEYS = ["Accuracy", "Precision", "Recall", "F1-score", "TPR", "FPR"]
 
-# Base directories
 BASE_DIR = Path(".")
-LOGS_DIR = BASE_DIR / "logs"
+LOG_CANDIDATES = [BASE_DIR / "logs_onepage", BASE_DIR / "logs"]
+
+
+def resolve_logs_dir(tag: str) -> Path:
+    """
+    Prefer logs_onepage/<tag>/ if it exists, otherwise fall back to logs/.
+    Supports both:
+      logs_onepage/<TAG>/CW_tam_<TAG>_page*/MODEL/result.json
+      logs/CW_tam_<TAG>_page*/MODEL/result.json
+    """
+    onepage_dir = BASE_DIR / "logs_onepage" / tag
+    if onepage_dir.exists() and onepage_dir.is_dir():
+        return onepage_dir
+
+    logs_dir = BASE_DIR / "logs"
+    if logs_dir.exists() and logs_dir.is_dir():
+        return logs_dir
+
+    raise FileNotFoundError(
+        f"Could not find logs directory for tag={tag}. "
+        f"Tried: {onepage_dir} and {logs_dir}"
+    )
+
+
+def page_sort_key(path: Path):
+    """
+    Sort page directories/files numerically by trailing _pageX if present.
+    """
+    name = path.name
+    if "_page" in name:
+        try:
+            return int(name.rsplit("_page", 1)[1])
+        except ValueError:
+            pass
+    return name
 
 
 def find_result_files_for_tag(tag: str):
     """
     Find all result.json files for a given TAG and model.
 
-    Expected pattern:
+    Expected patterns:
+      logs_onepage/<TAG>/CW_tam_<TAG>_page*/MODEL/result.json
       logs/CW_tam_<TAG>_page*/MODEL/result.json
     """
     results = {m: [] for m in MODELS}
+    logs_dir = resolve_logs_dir(tag)
 
-    pattern = f"CW_tam_{tag}_page"
-    for page_dir in LOGS_DIR.glob(pattern + "*"):
-        if not page_dir.is_dir():
-            continue
-        # page_dir name is e.g. CW_tam_padl1_pin0p005_pout0p005_L0_G0_page90
+    page_prefix = f"CW_tam_{tag}_page"
+    page_dirs = [p for p in logs_dir.glob(f"{page_prefix}*") if p.is_dir()]
+    page_dirs = sorted(page_dirs, key=page_sort_key)
+
+    for page_dir in page_dirs:
         for model in MODELS:
-            model_dir = page_dir / model
-            result_file = model_dir / "result.json"
+            result_file = page_dir / model / "result.json"
             if result_file.is_file():
                 results[model].append(result_file)
 
@@ -38,8 +71,17 @@ def find_result_files_for_tag(tag: str):
 def load_metrics(path: Path):
     with path.open("r", encoding="utf-8") as f:
         data = json.load(f)
-    # data is assumed to be a flat dict with metric names as keys
-    return {k: float(data[k]) for k in METRIC_KEYS if k in data}
+
+    row = {}
+    for k in METRIC_KEYS:
+        if k in data:
+            try:
+                row[k] = float(data[k])
+            except (TypeError, ValueError):
+                row[k] = None
+        else:
+            row[k] = None
+    return row
 
 
 def aggregate_results(tag: str):
@@ -52,28 +94,28 @@ def aggregate_results(tag: str):
             continue
 
         sums = {k: 0.0 for k in METRIC_KEYS}
-        count = 0
+        counts = {k: 0 for k in METRIC_KEYS}
 
         for path in files:
             metrics = load_metrics(path)
-            if not metrics:
-                continue
             for k in METRIC_KEYS:
-                if k in metrics:
-                    sums[k] += metrics[k]
-            count += 1
-
-        if count == 0:
-            continue
-
-        avg = {k: (sums[k] / count) for k in METRIC_KEYS}
+                val = metrics.get(k)
+                if val is not None:
+                    sums[k] += val
+                    counts[k] += 1
 
         row = {
             "tag": tag,
             "model": model,
-            "num_pages": count,
+            "num_pages": len(files),
         }
-        row.update(avg)
+
+        for k in METRIC_KEYS:
+            if counts[k] > 0:
+                row[k] = sums[k] / counts[k]
+            else:
+                row[k] = ""
+
         rows.append(row)
 
     return rows
@@ -82,7 +124,7 @@ def aggregate_results(tag: str):
 def write_csv(rows, out_path: Path):
     fieldnames = ["tag", "model", "num_pages"] + METRIC_KEYS
     with out_path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer = csv.DictWriter(f, fieldnames=fieldnames, restval="")
         writer.writeheader()
         for r in rows:
             writer.writerow(r)
@@ -95,7 +137,7 @@ def parse_args():
     parser.add_argument(
         "--tag",
         required=True,
-        help="Defended dataset tag, e.g. padl1_pin0p005_pout0p005_L0_G0",
+        help="Defended dataset tag, e.g. legacyPadl100_pin0p02_pout0p06_L1_G1",
     )
     parser.add_argument(
         "--out_csv",
@@ -121,6 +163,7 @@ def main():
     if not rows:
         print(f"No aggregated results for tag={tag}")
         return
+
     write_csv(rows, out_csv)
     print(f"Wrote {len(rows)} rows to {out_csv}")
 
