@@ -3,37 +3,19 @@ import csv
 import argparse
 from pathlib import Path
 
+# Models we expect
 MODELS = ["DF", "TikTok", "VarCNN", "RF"]
+
+# Metrics to aggregate (must match keys in result.json)
 METRIC_KEYS = ["Accuracy", "Precision", "Recall", "F1-score", "TPR", "FPR"]
 
 BASE_DIR = Path(".")
-LOG_CANDIDATES = [BASE_DIR / "logs_onepage", BASE_DIR / "logs"]
-
-
-def resolve_logs_dir(tag: str) -> Path:
-    """
-    Prefer logs_onepage/<tag>/ if it exists, otherwise fall back to logs/.
-    Supports both:
-      logs_onepage/<TAG>/CW_tam_<TAG>_page*/MODEL/result.json
-      logs/CW_tam_<TAG>_page*/MODEL/result.json
-    """
-    onepage_dir = BASE_DIR / "logs_onepage" / tag
-    if onepage_dir.exists() and onepage_dir.is_dir():
-        return onepage_dir
-
-    logs_dir = BASE_DIR / "logs"
-    if logs_dir.exists() and logs_dir.is_dir():
-        return logs_dir
-
-    raise FileNotFoundError(
-        f"Could not find logs directory for tag={tag}. "
-        f"Tried: {onepage_dir} and {logs_dir}"
-    )
+LOGS_DIR = BASE_DIR / "logs"
 
 
 def page_sort_key(path: Path):
     """
-    Sort page directories/files numerically by trailing _pageX if present.
+    Sort page directories numerically by trailing _pageX if present.
     """
     name = path.name
     if "_page" in name:
@@ -48,15 +30,19 @@ def find_result_files_for_tag(tag: str):
     """
     Find all result.json files for a given TAG and model.
 
-    Expected patterns:
-      logs_onepage/<TAG>/CW_tam_<TAG>_page*/MODEL/result.json
+    Expected layout (what you actually have):
       logs/CW_tam_<TAG>_page*/MODEL/result.json
+
+    So for TAG='legacyPadl100_pin0p02_pout0p06_L5_G1' we look under:
+      logs/CW_tam_legacyPadl100_pin0p02_pout0p06_L5_G1_page*/MODEL/result.json
     """
+    if not LOGS_DIR.exists():
+        raise FileNotFoundError(f"Logs directory not found: {LOGS_DIR}")
+
     results = {m: [] for m in MODELS}
-    logs_dir = resolve_logs_dir(tag)
 
     page_prefix = f"CW_tam_{tag}_page"
-    page_dirs = [p for p in logs_dir.glob(f"{page_prefix}*") if p.is_dir()]
+    page_dirs = [p for p in LOGS_DIR.glob(f"{page_prefix}*") if p.is_dir()]
     page_dirs = sorted(page_dirs, key=page_sort_key)
 
     for page_dir in page_dirs:
@@ -90,7 +76,7 @@ def aggregate_results(tag: str):
     rows = []
     for model, files in all_results.items():
         if not files:
-            print(f"No result.json files found for model {model}")
+            print(f"No result.json files found for model {model} (tag={tag})")
             continue
 
         sums = {k: 0.0 for k in METRIC_KEYS}
@@ -137,7 +123,7 @@ def parse_args():
     parser.add_argument(
         "--tag",
         required=True,
-        help="Defended dataset tag, e.g. legacyPadl100_pin0p02_pout0p06_L1_G1",
+        help="Defended dataset tag, e.g. legacyPadl100_pin0p02_pout0p06_L5_G1",
     )
     parser.add_argument(
         "--out_csv",
