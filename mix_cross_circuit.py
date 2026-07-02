@@ -12,12 +12,26 @@
 #       X: [M, T_out] mixed CW sequences
 #       groups: [M, K] original labels for the K circuits in each mixed pool
 #
+# Added metadata:
+#       src_indices       : [M, K] original sample indices used in each pool
+#       orig_cells        : [M] total real cells across K original traces
+#       mixed_cells       : [M] total emitted cells after mixing (before seq truncation)
+#       dummy_cells       : [M] total emitted dummy cells
+#       real_cells_out    : [M] total emitted real cells
+#       delay_mean        : [M] mean added delay for real cells
+#       delay_p50         : [M] median added delay for real cells
+#       delay_p95         : [M] 95th percentile added delay for real cells
+#       delay_max         : [M] max added delay for real cells
+#       orig_duration_max : [M] max duration across the K source traces
+#       mixed_duration    : [M] duration of mixed trace
+#       bw_overhead       : [M] (mixed_cells / orig_cells) - 1
+#       lat_overhead      : [M] (mixed_duration / orig_duration_max) - 1
+#
 # Later, you can build one-page datasets per monitored page P from this
 # by labelling each mixed trace as positive if P appears in groups[m].
 
 import os
 import argparse
-import math
 import numpy as np
 from random import Random
 
@@ -43,7 +57,6 @@ def cw_trace_to_packets(trace):
         packets.append([t, sz])
 
     if not packets:
-        # avoid degenerate empty traces
         packets.append([0.0, DATASIZE])
 
     packets.sort(key=lambda x: x[0])
@@ -67,6 +80,18 @@ def packets_to_cw_sequence(packets, seq_len):
         seq[i] = direction * float(t)
 
     return seq
+
+
+def trace_duration_from_cw(trace):
+    """
+    Duration = max timestamp - min timestamp over nonzero entries.
+    Returns 0.0 for empty traces.
+    """
+    nz = trace[trace != 0]
+    if len(nz) == 0:
+        return 0.0
+    times = np.abs(nz.astype(np.float64))
+    return float(times.max() - times.min())
 
 
 def _split_by_direction(packets, circuit_idx):
@@ -97,26 +122,29 @@ def _mix_one_direction(cells, delta_t, N, seed):
       seed    : RNG seed for tie-breaking
 
     Outputs:
-      out_packets: list of [time, size] for this direction
-      delays     : list of per-cell added delays (for real cells only)
+      out_packets : list of [time, size] for this direction
+      delays      : list of per-cell added delays (for real cells only)
+      n_real_out  : number of real cells emitted
+      n_dummy_out : number of dummy cells emitted
     """
     rng = Random(seed)
     out_packets = []
     delays = []
 
     if N <= 0:
-        return out_packets, delays
+        return out_packets, delays, 0, 0
 
     if not cells:
-        return out_packets, delays
+        return out_packets, delays, 0, 0
 
-    # Sort by time, then circuit_idx (stable); RNG only for exact ties.
     cells = sorted(cells, key=lambda x: (x["time"], x["circuit_idx"]))
 
     future_idx = 0
     queue = []
 
-    # Start buckets at the time of the first cell.
+    n_real_out = 0
+    n_dummy_out = 0
+
     t0 = cells[0]["time"]
     b = 0
 
@@ -132,17 +160,12 @@ def _mix_one_direction(cells, delta_t, N, seed):
 
         eligible = queue + arrivals
 
-        # If we have no eligible real cells, we still emit N dummies.
         if eligible:
-            # Stable sort + random tie-break on exact time/circuit ties.
-            eligible.sort(
-                key=lambda x: (x["time"], x["circuit_idx"], rng.random())
-            )
+            eligible.sort(key=lambda x: (x["time"], x["circuit_idx"], rng.random()))
 
         real = eligible[:N]
         queue = eligible[N:]
 
-        # Decide sign for dummy cells: use sign of real if available, otherwise +.
         dummy_sign = 1.0
         if real:
             dummy_sign = 1.0 if real[0]["size"] > 0 else -1.0
@@ -153,14 +176,15 @@ def _mix_one_direction(cells, delta_t, N, seed):
                 cell = real[j]
                 out_packets.append([out_time, cell["size"]])
                 delays.append(out_time - cell["time"])
+                n_real_out += 1
             else:
-                # Dummy cell
                 sz = dummy_sign * DATASIZE
                 out_packets.append([out_time, sz])
+                n_dummy_out += 1
 
         b += 1
 
-    return out_packets, delays
+    return out_packets, delays, n_real_out, n_dummy_out
 
 
 def mix_pool(traces, delta_t, N_out, N_in, seed):
@@ -174,31 +198,67 @@ def mix_pool(traces, delta_t, N_out, N_in, seed):
       N_in : per-bucket incoming capacity
       seed : base RNG seed
 
-    Output:
+    Outputs:
       mixed_packets: list of [time, size] sorted by time, size sign = direction
+      meta: dict with delay and cell-count statistics
     """
     all_out = []
     all_in = []
 
-    # Build global outgoing/incoming cell lists with circuit indices.
     for ci, trace in enumerate(traces):
         pkts = cw_trace_to_packets(trace)
         out_cells, in_cells = _split_by_direction(pkts, circuit_idx=ci)
         all_out.extend(out_cells)
         all_in.extend(in_cells)
 
-    out_packets, _ = _mix_one_direction(all_out, delta_t=delta_t, N=N_out, seed=seed + 1)
-    in_packets, _ = _mix_one_direction(all_in, delta_t=delta_t, N=N_in, seed=seed + 2)
+    out_packets, out_delays, out_real, out_dummy = _mix_one_direction(
+        all_out, delta_t=delta_t, N=N_out, seed=seed + 1
+    )
+    in_packets, in_delays, in_real, in_dummy = _mix_one_direction(
+        all_in, delta_t=delta_t, N=N_in, seed=seed + 2
+    )
 
-    # Ensure directions: outgoing positive, incoming negative
     mixed = []
     for t, sz in out_packets:
-        mixed.append([t, abs(sz)])  # force positive
+        mixed.append([t, abs(sz)])
     for t, sz in in_packets:
-        mixed.append([t, -abs(sz)])  # force negative
+        mixed.append([t, -abs(sz)])
 
     mixed.sort(key=lambda x: x[0])
-    return mixed
+
+    delays = np.array(out_delays + in_delays, dtype=np.float64)
+    n_real_out = out_real + in_real
+    n_dummy_out = out_dummy + in_dummy
+
+    if len(mixed) > 0:
+        mixed_times = np.array([p[0] for p in mixed], dtype=np.float64)
+        mixed_duration = float(mixed_times.max() - mixed_times.min())
+    else:
+        mixed_duration = 0.0
+
+    if delays.size > 0:
+        delay_mean = float(np.mean(delays))
+        delay_p50 = float(np.percentile(delays, 50))
+        delay_p95 = float(np.percentile(delays, 95))
+        delay_max = float(np.max(delays))
+    else:
+        delay_mean = 0.0
+        delay_p50 = 0.0
+        delay_p95 = 0.0
+        delay_max = 0.0
+
+    meta = {
+        "n_real_out": int(n_real_out),
+        "n_dummy_out": int(n_dummy_out),
+        "n_mixed_cells": int(len(mixed)),
+        "delay_mean": delay_mean,
+        "delay_p50": delay_p50,
+        "delay_p95": delay_p95,
+        "delay_max": delay_max,
+        "mixed_duration": mixed_duration,
+    }
+
+    return mixed, meta
 
 
 def build_mixed_dataset(
@@ -227,8 +287,21 @@ def build_mixed_dataset(
       seed      : RNG seed
 
     Output .npz:
-      X      : [M, seq_len] mixed CW sequences
-      groups : [M, K] original labels (site IDs) per mixed flow
+      X                 : [M, seq_len] mixed CW sequences
+      groups            : [M, K] original labels (site IDs) per mixed flow
+      src_indices       : [M, K] original sample indices per mixed flow
+      orig_cells        : [M]
+      mixed_cells       : [M]
+      dummy_cells       : [M]
+      real_cells_out    : [M]
+      delay_mean        : [M]
+      delay_p50         : [M]
+      delay_p95         : [M]
+      delay_max         : [M]
+      orig_duration_max : [M]
+      mixed_duration    : [M]
+      bw_overhead       : [M]
+      lat_overhead      : [M]
     """
     rng = np.random.default_rng(seed)
 
@@ -246,6 +319,23 @@ def build_mixed_dataset(
 
     X_mix = np.zeros((num_mixed, seq_len), dtype=np.float64)
     groups = np.zeros((num_mixed, K), dtype=np.int64)
+    src_indices = np.zeros((num_mixed, K), dtype=np.int64)
+
+    orig_cells = np.zeros(num_mixed, dtype=np.int64)
+    mixed_cells = np.zeros(num_mixed, dtype=np.int64)
+    dummy_cells = np.zeros(num_mixed, dtype=np.int64)
+    real_cells_out = np.zeros(num_mixed, dtype=np.int64)
+
+    delay_mean = np.zeros(num_mixed, dtype=np.float64)
+    delay_p50 = np.zeros(num_mixed, dtype=np.float64)
+    delay_p95 = np.zeros(num_mixed, dtype=np.float64)
+    delay_max = np.zeros(num_mixed, dtype=np.float64)
+
+    orig_duration_max = np.zeros(num_mixed, dtype=np.float64)
+    mixed_duration = np.zeros(num_mixed, dtype=np.float64)
+
+    bw_overhead = np.zeros(num_mixed, dtype=np.float64)
+    lat_overhead = np.zeros(num_mixed, dtype=np.float64)
 
     print("Building mixed dataset")
     print("----------------------")
@@ -264,7 +354,7 @@ def build_mixed_dataset(
         traces = [X[i] for i in idxs]
         labels = [int(y[i]) for i in idxs]
 
-        mixed_packets = mix_pool(
+        mixed_packets, meta = mix_pool(
             traces,
             delta_t=delta_t,
             N_out=N_out,
@@ -274,13 +364,70 @@ def build_mixed_dataset(
 
         X_mix[m] = packets_to_cw_sequence(mixed_packets, seq_len=seq_len)
         groups[m] = labels
+        src_indices[m] = idxs
+
+        ocells = sum(int(np.count_nonzero(t)) for t in traces)
+        odurs = [trace_duration_from_cw(t) for t in traces]
+        odur_max = max(odurs) if len(odurs) > 0 else 0.0
+
+        orig_cells[m] = ocells
+        mixed_cells[m] = int(meta["n_mixed_cells"])
+        dummy_cells[m] = int(meta["n_dummy_out"])
+        real_cells_out[m] = int(meta["n_real_out"])
+
+        delay_mean[m] = float(meta["delay_mean"])
+        delay_p50[m] = float(meta["delay_p50"])
+        delay_p95[m] = float(meta["delay_p95"])
+        delay_max[m] = float(meta["delay_max"])
+
+        orig_duration_max[m] = float(odur_max)
+        mixed_duration[m] = float(meta["mixed_duration"])
+
+        if ocells > 0:
+            bw_overhead[m] = float(mixed_cells[m] / ocells - 1.0)
+        else:
+            bw_overhead[m] = 0.0
+
+        if odur_max > 0:
+            lat_overhead[m] = float(mixed_duration[m] / odur_max - 1.0)
+        else:
+            lat_overhead[m] = 0.0
 
         if (m + 1) % 500 == 0 or (m + 1) == num_mixed:
-            print(f"Generated {m + 1}/{num_mixed} mixed traces")
+            mean_bw = float(np.mean(bw_overhead[: m + 1]))
+            mean_lat = float(np.mean(lat_overhead[: m + 1]))
+            print(
+                f"Generated {m + 1}/{num_mixed} mixed traces | "
+                f"mean BW overhead={mean_bw:.4f}, mean Lat overhead={mean_lat:.4f}"
+            )
 
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    np.savez_compressed(out_path, X=X_mix, groups=groups)
+    np.savez_compressed(
+        out_path,
+        X=X_mix,
+        groups=groups,
+        src_indices=src_indices,
+        orig_cells=orig_cells,
+        mixed_cells=mixed_cells,
+        dummy_cells=dummy_cells,
+        real_cells_out=real_cells_out,
+        delay_mean=delay_mean,
+        delay_p50=delay_p50,
+        delay_p95=delay_p95,
+        delay_max=delay_max,
+        orig_duration_max=orig_duration_max,
+        mixed_duration=mixed_duration,
+        bw_overhead=bw_overhead,
+        lat_overhead=lat_overhead,
+    )
     print(f"Saved mixed dataset to: {out_path}")
+
+    print("Summary")
+    print("-------")
+    print(f"Mean BW overhead   : {np.mean(bw_overhead):.6f}")
+    print(f"Mean Lat overhead  : {np.mean(lat_overhead):.6f}")
+    print(f"Mean delay         : {np.mean(delay_mean):.6f}")
+    print(f"Mean p95 delay     : {np.mean(delay_p95):.6f}")
 
     return out_path
 
