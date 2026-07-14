@@ -3,13 +3,10 @@ import csv
 import argparse
 from pathlib import Path
 
-# Models we expect
 MODELS = ["DF", "TikTok", "VarCNN", "RF"]
-
-# Metrics to aggregate (must match keys in result.json)
 METRIC_KEYS = ["Accuracy", "Precision", "Recall", "F1-score", "TPR", "FPR"]
 
-BASE_DIR = Path(".")
+BASE_DIR = Path(__file__).resolve().parent
 LOGS_DIR = BASE_DIR / "logs"
 
 
@@ -28,20 +25,20 @@ def page_sort_key(path: Path):
 
 def find_result_files_for_tag(tag: str):
     """
-    Find all result.json files for a given TAG and model.
+    Find all result.json files for a given tag.
 
-    Expected layout (what you actually have):
-      logs/CW_tam_<TAG>_page*/MODEL/result.json
+    Expected layout:
+      logs/CW_mix_<TAG>_page*/MODEL/result.json
 
-    So for TAG='legacyPadl100_pin0p02_pout0p06_L5_G1' we look under:
-      logs/CW_tam_legacyPadl100_pin0p02_pout0p06_L5_G1_page*/MODEL/result.json
+    Example:
+      logs/CW_mix_K4_deltat0p01_N3_page*/MODEL/result.json
     """
     if not LOGS_DIR.exists():
         raise FileNotFoundError(f"Logs directory not found: {LOGS_DIR}")
 
     results = {m: [] for m in MODELS}
 
-    page_prefix = f"CW_tam_{tag}_page"
+    page_prefix = f"CW_mix_{tag}_page"
     page_dirs = [p for p in LOGS_DIR.glob(f"{page_prefix}*") if p.is_dir()]
     page_dirs = sorted(page_dirs, key=page_sort_key)
 
@@ -123,14 +120,14 @@ def parse_args():
     parser.add_argument(
         "--tag",
         required=True,
-        help="Defended dataset tag, e.g. legacyPadl100_pin0p02_pout0p06_L5_G1",
+        help="Dataset tag, e.g. K4_deltat0p01_N3",
     )
     parser.add_argument(
         "--out_csv",
         default=None,
         help=(
             "Output CSV path. If not provided, defaults to "
-            "onepage_summary_<TAG>.csv in the current directory."
+            "onepage_summary_<TAG>.csv in the script directory."
         ),
     )
     return parser.parse_args()

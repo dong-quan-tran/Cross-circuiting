@@ -43,10 +43,45 @@ p_in = p_out = 0.02
 
 Batch 1:
 # L=1, G=1,3,5,9
-python run_Tamaraw_CW.py --legacy_padl 100 --p_in 0.004 --p_out 0.012 --L 1 --G 1
+python run_Tamaraw_CW.py --legacy_padl 100 --p_in 0.025 --p_out 0.075 --L 1 --G 3
+python run_Tamaraw_CW.py --legacy_padl 100 --p_in 0.025 --p_out 0.075 --L 1 --G 5
+python run_Tamaraw_CW.py --legacy_padl 100 --p_in 0.025 --p_out 0.075 --L 1 --G 7
+python run_Tamaraw_CW.py --legacy_padl 100 --p_in 0.025 --p_out 0.075 --L 1 --G 9
+
+cd /home/johnny/Tamaraw-tradeoff-Phase2
+
+for TAG in \
+  legacyPadl100_pin0p025_pout0p075_L1_G3 \
+  legacyPadl100_pin0p025_pout0p075_L1_G5 \
+  legacyPadl100_pin0p025_pout0p075_L1_G7 \
+  legacyPadl100_pin0p025_pout0p075_L1_G9 
+do
+  echo "============================================"
+  echo "Generating one-page subdatasets for ${TAG}"
+  echo "============================================"
+
+  python make_onepage_dataset.py \
+    --in_path "datasets/CW_tamaraw_${TAG}.npz" \
+    --out_dir "datasets/CW_tam_${TAG}_pages" \
+    --n_neg_per_pos 1 \
+    --all_pages
+done
+
+python run_Tamaraw_CW.py --legacy_padl 100 --p_in 0.025 --p_out 0.075 --L 3 --G 1
+python run_Tamaraw_CW.py --legacy_padl 100 --p_in 0.025 --p_out 0.075 --L 5 --G 1
+python run_Tamaraw_CW.py --legacy_padl 100 --p_in 0.025 --p_out 0.075 --L 7 --G 1
+python run_Tamaraw_CW.py --legacy_padl 100 --p_in 0.025 --p_out 0.075 --L 9 --G 1
+
 python run_Tamaraw_CW.py --legacy_padl 100 --p_in 0.004 --p_out 0.012 --L 1 --G 3
 python run_Tamaraw_CW.py --legacy_padl 100 --p_in 0.004 --p_out 0.012 --L 1 --G 5
 python run_Tamaraw_CW.py --legacy_padl 100 --p_in 0.004 --p_out 0.012 --L 1 --G 9
 
 
+cd /home/johnny/Tamaraw-tradeoff-Phase2
 
+for TAG in \
+  legacyPadl100_pin0p02_pout0p06_L9_G1 \
+  legacyPadl100_pin0p025_pout0p075_L7_G1
+do
+  python aggregate_onepage_results.py --tag "${TAG}"
+done

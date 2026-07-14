@@ -1,0 +1,5 @@
+tag,model,Accuracy,Precision,Recall,F1-score
+CW_mix_K4_deltat0p01_N3,DF,0.0119,0.0014,0.0113,0.0018
+CW_mix_K4_deltat0p01_N3,TikTok,0.0113,0.0015,0.0107,0.0009
+CW_mix_K4_deltat0p01_N3,VarCNN,0.0125,0.0075,0.0125,0.0031
+CW_mix_K4_deltat0p01_N3,RF,0.0131,0.0015,0.0122,0.0016
