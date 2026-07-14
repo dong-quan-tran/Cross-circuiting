@@ -31,23 +31,15 @@
 # by labelling each mixed trace as positive if P appears in groups[m].
 
 import os
+import time
 import argparse
 import numpy as np
 from random import Random
 
-DATASIZE = 800  # consistent with CW/Tamaraw encoding (cell size placeholder)
+DATASIZE = 800
 
 
 def cw_trace_to_packets(trace):
-    """
-    Convert one CW sequence (1D numpy array) into a packet list:
-      trace[i] = 0                -> no packet
-      trace[i] = +t (float > 0)   -> outgoing packet at time t, size +DATASIZE
-      trace[i] = -t (float < 0)   -> incoming packet at time t, size -DATASIZE
-
-    Returns:
-      packets: list of [time, size] sorted by time.
-    """
     packets = []
     for v in trace:
         if v == 0:
@@ -64,12 +56,6 @@ def cw_trace_to_packets(trace):
 
 
 def packets_to_cw_sequence(packets, seq_len):
-    """
-    Convert a packet list [time, size] back into a CW-style 1D array of length seq_len.
-
-    We encode up to seq_len packets; if there are more, we truncate.
-    Each entry is +/-time, sign from size sign, magnitude = time.
-    """
     packets = sorted(packets, key=lambda x: x[0])
     seq = np.zeros(seq_len, dtype=np.float64)
 
@@ -83,10 +69,6 @@ def packets_to_cw_sequence(packets, seq_len):
 
 
 def trace_duration_from_cw(trace):
-    """
-    Duration = max timestamp - min timestamp over nonzero entries.
-    Returns 0.0 for empty traces.
-    """
     nz = trace[trace != 0]
     if len(nz) == 0:
         return 0.0
@@ -95,11 +77,6 @@ def trace_duration_from_cw(trace):
 
 
 def _split_by_direction(packets, circuit_idx):
-    """
-    Given packets [[time, size], ...] for one circuit, return two lists:
-      out_cells: list of {"time", "circuit_idx", "size"} with size > 0
-      in_cells : list of {"time", "circuit_idx", "size"} with size < 0
-    """
     out_cells = []
     in_cells = []
     for t, sz in packets:
@@ -112,29 +89,11 @@ def _split_by_direction(packets, circuit_idx):
 
 
 def _mix_one_direction(cells, delta_t, N, seed):
-    """
-    Core mixing for a single direction (all sizes share the same sign).
-
-    Inputs:
-      cells   : list of dicts {"time", "circuit_idx", "size"} (all same sign)
-      delta_t : bucket width in seconds
-      N       : per-bucket capacity (cells per bucket)
-      seed    : RNG seed for tie-breaking
-
-    Outputs:
-      out_packets : list of [time, size] for this direction
-      delays      : list of per-cell added delays (for real cells only)
-      n_real_out  : number of real cells emitted
-      n_dummy_out : number of dummy cells emitted
-    """
     rng = Random(seed)
     out_packets = []
     delays = []
 
-    if N <= 0:
-        return out_packets, delays, 0, 0
-
-    if not cells:
+    if N <= 0 or not cells:
         return out_packets, delays, 0, 0
 
     cells = sorted(cells, key=lambda x: (x["time"], x["circuit_idx"]))
@@ -159,7 +118,6 @@ def _mix_one_direction(cells, delta_t, N, seed):
             future_idx += 1
 
         eligible = queue + arrivals
-
         if eligible:
             eligible.sort(key=lambda x: (x["time"], x["circuit_idx"], rng.random()))
 
@@ -188,20 +146,6 @@ def _mix_one_direction(cells, delta_t, N, seed):
 
 
 def mix_pool(traces, delta_t, N_out, N_in, seed):
-    """
-    Mix a pool of K per-circuit CW traces into a single mixed trace.
-
-    Inputs:
-      traces: list of 1D numpy arrays (CW traces), all length T
-      delta_t: bucket width in seconds
-      N_out: per-bucket outgoing capacity
-      N_in : per-bucket incoming capacity
-      seed : base RNG seed
-
-    Outputs:
-      mixed_packets: list of [time, size] sorted by time, size sign = direction
-      meta: dict with delay and cell-count statistics
-    """
     all_out = []
     all_in = []
 
@@ -261,6 +205,47 @@ def mix_pool(traces, delta_t, N_out, N_in, seed):
     return mixed, meta
 
 
+def _save_partial(
+    out_path,
+    upto,
+    X_mix,
+    groups,
+    src_indices,
+    orig_cells,
+    mixed_cells,
+    dummy_cells,
+    real_cells_out,
+    delay_mean,
+    delay_p50,
+    delay_p95,
+    delay_max,
+    orig_duration_max,
+    mixed_duration,
+    bw_overhead,
+    lat_overhead,
+):
+    partial_path = out_path.replace(".npz", f".partial_{upto}.npz")
+    np.savez_compressed(
+        partial_path,
+        X=X_mix[:upto],
+        groups=groups[:upto],
+        src_indices=src_indices[:upto],
+        orig_cells=orig_cells[:upto],
+        mixed_cells=mixed_cells[:upto],
+        dummy_cells=dummy_cells[:upto],
+        real_cells_out=real_cells_out[:upto],
+        delay_mean=delay_mean[:upto],
+        delay_p50=delay_p50[:upto],
+        delay_p95=delay_p95[:upto],
+        delay_max=delay_max[:upto],
+        orig_duration_max=orig_duration_max[:upto],
+        mixed_duration=mixed_duration[:upto],
+        bw_overhead=bw_overhead[:upto],
+        lat_overhead=lat_overhead[:upto],
+    )
+    print(f"[checkpoint] saved partial dataset: {partial_path}")
+
+
 def build_mixed_dataset(
     in_path,
     out_path,
@@ -271,43 +256,19 @@ def build_mixed_dataset(
     num_mixed=None,
     seq_len=5000,
     seed=2024,
+    max_traces=None,
+    progress_every=100,
+    save_every=None,
 ):
-    """
-    Build a generic mixed dataset from a CW dataset.
-
-    Inputs:
-      in_path   : path to source CW dataset (.npz) with X, y
-      out_path  : output path (.npz)
-      K         : pool size (circuits per mixed flow)
-      delta_t   : bucket width in seconds
-      N_out     : outgoing cells per bucket
-      N_in      : incoming cells per bucket
-      num_mixed : number of mixed flows to generate (default: len(X))
-      seq_len   : length of CW sequence to output (default: 5000)
-      seed      : RNG seed
-
-    Output .npz:
-      X                 : [M, seq_len] mixed CW sequences
-      groups            : [M, K] original labels (site IDs) per mixed flow
-      src_indices       : [M, K] original sample indices per mixed flow
-      orig_cells        : [M]
-      mixed_cells       : [M]
-      dummy_cells       : [M]
-      real_cells_out    : [M]
-      delay_mean        : [M]
-      delay_p50         : [M]
-      delay_p95         : [M]
-      delay_max         : [M]
-      orig_duration_max : [M]
-      mixed_duration    : [M]
-      bw_overhead       : [M]
-      lat_overhead      : [M]
-    """
     rng = np.random.default_rng(seed)
 
     d = np.load(in_path)
     X = d["X"]
     y = d["y"]
+
+    if max_traces is not None:
+        X = X[:max_traces]
+        y = y[:max_traces]
 
     N, T = X.shape
 
@@ -316,6 +277,8 @@ def build_mixed_dataset(
 
     if num_mixed is None:
         num_mixed = N
+
+    num_mixed = min(num_mixed, N)
 
     X_mix = np.zeros((num_mixed, seq_len), dtype=np.float64)
     groups = np.zeros((num_mixed, K), dtype=np.int64)
@@ -348,6 +311,11 @@ def build_mixed_dataset(
     print(f"N_out / N_in    : {N_out} / {N_in}")
     print(f"num_mixed       : {num_mixed}")
     print(f"seq_len         : {seq_len}")
+    print(f"progress_every  : {progress_every}")
+    print(f"save_every      : {save_every}")
+    print(f"max_traces      : {max_traces}")
+
+    t_start = time.time()
 
     for m in range(num_mixed):
         idxs = rng.choice(N, size=K, replace=False)
@@ -383,25 +351,38 @@ def build_mixed_dataset(
         orig_duration_max[m] = float(odur_max)
         mixed_duration[m] = float(meta["mixed_duration"])
 
-        if ocells > 0:
-            bw_overhead[m] = float(mixed_cells[m] / ocells - 1.0)
-        else:
-            bw_overhead[m] = 0.0
+        bw_overhead[m] = float(mixed_cells[m] / ocells - 1.0) if ocells > 0 else 0.0
+        lat_overhead[m] = float(mixed_duration[m] / odur_max - 1.0) if odur_max > 0 else 0.0
 
-        if odur_max > 0:
-            lat_overhead[m] = float(mixed_duration[m] / odur_max - 1.0)
-        else:
-            lat_overhead[m] = 0.0
-
-        if (m + 1) % 500 == 0 or (m + 1) == num_mixed:
-            mean_bw = float(np.mean(bw_overhead[: m + 1]))
-            mean_lat = float(np.mean(lat_overhead[: m + 1]))
+        done = m + 1
+        if done % progress_every == 0 or done == num_mixed:
+            elapsed = time.time() - t_start
+            rate = done / elapsed if elapsed > 0 else 0.0
+            eta = (num_mixed - done) / rate if rate > 0 else float("inf")
+            mean_bw = float(np.mean(bw_overhead[:done]))
+            mean_lat = float(np.mean(lat_overhead[:done]))
             print(
-                f"Generated {m + 1}/{num_mixed} mixed traces | "
-                f"mean BW overhead={mean_bw:.4f}, mean Lat overhead={mean_lat:.4f}"
+                f"Generated {done}/{num_mixed} | "
+                f"elapsed={elapsed/60:.1f} min | "
+                f"rate={rate:.2f} traces/s | "
+                f"ETA={eta/60:.1f} min | "
+                f"mean BW={mean_bw:.4f} | mean Lat={mean_lat:.4f}"
             )
 
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        if save_every is not None and (done % save_every == 0):
+            _save_partial(
+                out_path, done,
+                X_mix, groups, src_indices,
+                orig_cells, mixed_cells, dummy_cells, real_cells_out,
+                delay_mean, delay_p50, delay_p95, delay_max,
+                orig_duration_max, mixed_duration,
+                bw_overhead, lat_overhead,
+            )
+
+    out_dir = os.path.dirname(out_path)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+
     np.savez_compressed(
         out_path,
         X=X_mix,
@@ -420,8 +401,8 @@ def build_mixed_dataset(
         bw_overhead=bw_overhead,
         lat_overhead=lat_overhead,
     )
-    print(f"Saved mixed dataset to: {out_path}")
 
+    print(f"Saved mixed dataset to: {out_path}")
     print("Summary")
     print("-------")
     print(f"Mean BW overhead   : {np.mean(bw_overhead):.6f}")
@@ -435,59 +416,33 @@ def build_mixed_dataset(
 def main():
     parser = argparse.ArgumentParser()
 
+    parser.add_argument("--in_path", type=str, default="datasets/CW.npz")
+    parser.add_argument("--out_path", type=str, default="datasets/CW_mix_K4.npz")
+    parser.add_argument("--K", type=int, default=4)
+    parser.add_argument("--delta_t", type=float, default=0.01)
+    parser.add_argument("--N_out", type=int, default=10)
+    parser.add_argument("--N_in", type=int, default=10)
+    parser.add_argument("--num_mixed", type=int, default=None)
+    parser.add_argument("--seq_len", type=int, default=5000)
+    parser.add_argument("--seed", type=int, default=2024)
+
     parser.add_argument(
-        "--in_path",
-        type=str,
-        default="datasets/CW.npz",
-        help="Input CW dataset (.npz) with X, y",
-    )
-    parser.add_argument(
-        "--out_path",
-        type=str,
-        default="datasets/CW_mix_K4.npz",
-        help="Output path for mixed dataset (.npz)",
-    )
-    parser.add_argument(
-        "--K",
-        type=int,
-        default=4,
-        help="Number of circuits per mixing pool",
-    )
-    parser.add_argument(
-        "--delta_t",
-        type=float,
-        default=0.01,
-        help="Bucket width in seconds (e.g., 0.01 = 10 ms)",
-    )
-    parser.add_argument(
-        "--N_out",
-        type=int,
-        default=10,
-        help="Outgoing cells per bucket in mixed flow",
-    )
-    parser.add_argument(
-        "--N_in",
-        type=int,
-        default=10,
-        help="Incoming cells per bucket in mixed flow",
-    )
-    parser.add_argument(
-        "--num_mixed",
+        "--max_traces",
         type=int,
         default=None,
-        help="Number of mixed flows to generate (default: N original traces)",
+        help="Only use the first max_traces source traces for quick debugging",
     )
     parser.add_argument(
-        "--seq_len",
+        "--progress_every",
         type=int,
-        default=5000,
-        help="Length of CW sequence to output",
+        default=100,
+        help="Print progress every N generated mixed traces",
     )
     parser.add_argument(
-        "--seed",
+        "--save_every",
         type=int,
-        default=2024,
-        help="RNG seed",
+        default=None,
+        help="Checkpoint partial output every N generated traces",
     )
 
     args = parser.parse_args()
@@ -502,6 +457,9 @@ def main():
         num_mixed=args.num_mixed,
         seq_len=args.seq_len,
         seed=args.seed,
+        max_traces=args.max_traces,
+        progress_every=args.progress_every,
+        save_every=args.save_every,
     )
 
 
