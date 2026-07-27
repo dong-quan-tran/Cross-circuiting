@@ -1,87 +1,52 @@
-cd /home/johnny/Tamaraw-tradeoff-Phase2
+*Run mix_cross_circuit.py:
 
-for TAG in \
-legacyPadl100_pin0p015_pout0p045_L1_G1 \
-  legacyPadl100_pin0p025_pout0p075_L1_G1
-do
-  echo "============================================"
-  echo "Generating one-page subdatasets for ${TAG}"
-  echo "============================================"
-
-  python make_onepage_dataset.py \
-    --in_path "datasets/CW_tamaraw_${TAG}.npz" \
-    --out_dir "datasets/CW_tam_${TAG}_pages" \
-    --n_neg_per_pos 1 \
-    --all_pages
-done
-
-
-cd /home/johnny/Tamaraw-tradeoff-Phase2
-
-for TAG in \
-  legacyPadl100_pin0p02_pout0p06_L1_G9 \
-  legacyPadl100_pin0p02_pout0p06_L3_G1 \
-  legacyPadl100_pin0p02_pout0p06_L5_G1 \
-  legacyPadl100_pin0p02_pout0p06_L7_G1
-do
-  bash run_onepage_experiments_cuda1.sh "${TAG}"
-done
+python mix_cross_circuit.py \
+  --in_path datasets/CW.npz \
+  --out_path datasets/CW_mix_K4_deltat0p01_N1.npz \
+  --K 4 \
+  --delta_t 0.01 \
+  --N_out 1 \
+  --N_in 1 \
+  --seq_len 5000 \
+  --seed 2024
 
 
 
-cd /home/johnny/Tamaraw-tradeoff-Phase2
+*Add y label for K=1:
 
-export PYTHONPATH=/home/johnny/Tamaraw-tradeoff-Phase2:$PYTHONPATH
+python - <<'PY'
+import numpy as np
+from pathlib import Path
 
+path = Path("datasets") / "CW_mix_K1_deltat0p01_N3.npz"
+d = np.load(path, allow_pickle=True)
 
+print("keys before:", d.files)
 
-p_in = 0.02, p_out = 0.06 
-p_in = p_out = 0.005
-p_in = p_out = 0.01
-p_in = p_out = 0.02
+X = d["X"]
+groups = d["groups"]  # shape: (M, 1) for K=1
+y_raw = groups[:, 0].astype(np.int64)
 
+classes = np.unique(y_raw)
+class_to_new = {c: i for i, c in enumerate(classes)}
+y = np.array([class_to_new[c] for c in y_raw], dtype=np.int64)
 
-Batch 1:
-# L=1, G=1,3,5,9
-python run_Tamaraw_CW.py --legacy_padl 100 --p_in 0.025 --p_out 0.075 --L 1 --G 3
-python run_Tamaraw_CW.py --legacy_padl 100 --p_in 0.025 --p_out 0.075 --L 1 --G 5
-python run_Tamaraw_CW.py --legacy_padl 100 --p_in 0.025 --p_out 0.075 --L 1 --G 7
-python run_Tamaraw_CW.py --legacy_padl 100 --p_in 0.025 --p_out 0.075 --L 1 --G 9
+print("X shape:", X.shape)
+print("groups shape:", groups.shape)
+print("y shape:", y.shape)
+print("num classes:", len(classes), "min y:", y.min(), "max y:", y.max())
 
-cd /home/johnny/Tamaraw-tradeoff-Phase2
+# Copy all existing arrays and add y
+kwargs = {k: d[k] for k in d.files}
+kwargs["y"] = y
+kwargs["y_raw"] = y_raw
+kwargs["classes"] = classes
 
-for TAG in \
-  legacyPadl100_pin0p025_pout0p075_L1_G3 \
-  legacyPadl100_pin0p025_pout0p075_L1_G5 \
-  legacyPadl100_pin0p025_pout0p075_L1_G7 \
-  legacyPadl100_pin0p025_pout0p075_L1_G9 
-do
-  echo "============================================"
-  echo "Generating one-page subdatasets for ${TAG}"
-  echo "============================================"
-
-  python make_onepage_dataset.py \
-    --in_path "datasets/CW_tamaraw_${TAG}.npz" \
-    --out_dir "datasets/CW_tam_${TAG}_pages" \
-    --n_neg_per_pos 1 \
-    --all_pages
-done
-
-python run_Tamaraw_CW.py --legacy_padl 100 --p_in 0.025 --p_out 0.075 --L 3 --G 1
-python run_Tamaraw_CW.py --legacy_padl 100 --p_in 0.025 --p_out 0.075 --L 5 --G 1
-python run_Tamaraw_CW.py --legacy_padl 100 --p_in 0.025 --p_out 0.075 --L 7 --G 1
-python run_Tamaraw_CW.py --legacy_padl 100 --p_in 0.025 --p_out 0.075 --L 9 --G 1
-
-python run_Tamaraw_CW.py --legacy_padl 100 --p_in 0.004 --p_out 0.012 --L 1 --G 3
-python run_Tamaraw_CW.py --legacy_padl 100 --p_in 0.004 --p_out 0.012 --L 1 --G 5
-python run_Tamaraw_CW.py --legacy_padl 100 --p_in 0.004 --p_out 0.012 --L 1 --G 9
+np.savez_compressed(path, **kwargs)
+print("Saved updated dataset with y to", path)
+PY
 
 
-cd /home/johnny/Tamaraw-tradeoff-Phase2
 
-for TAG in \
-  legacyPadl100_pin0p02_pout0p06_L9_G1 \
-  legacyPadl100_pin0p025_pout0p075_L7_G1
-do
-  python aggregate_onepage_results.py --tag "${TAG}"
-done
+*Run multipage experiment:
+bash run_multipage_experiments.sh CW_mix_K1_deltat0p01_N3
