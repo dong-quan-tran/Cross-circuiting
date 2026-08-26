@@ -19,7 +19,6 @@ def knn_monitor(net, device, memory_data_loader, test_data_loader, num_classes, 
     y_true = []
 
     with torch.no_grad():
-        # Generate feature bank
         for data, target in memory_data_loader:
             feature = net(data.to(device, non_blocking=True))
             feature = F.normalize(feature, dim=1)
@@ -29,7 +28,6 @@ def knn_monitor(net, device, memory_data_loader, test_data_loader, num_classes, 
         feature_bank = torch.cat(feature_bank, dim=0).t().contiguous().to(device)
         feature_labels = torch.cat(feature_labels, dim=0).t().contiguous().to(device)
 
-        # Loop through test data to predict the label by weighted kNN search
         for data, target in test_data_loader:
             data = data.to(device, non_blocking=True)
             target = target.to(device, non_blocking=True)
@@ -52,14 +50,26 @@ def knn_predict(feature, feature_bank, feature_labels, classes, knn_k, knn_t):
     """
     sim_matrix = torch.mm(feature, feature_bank)
     sim_weight, sim_indices = sim_matrix.topk(k=knn_k, dim=-1)
-    sim_labels = torch.gather(feature_labels.expand(feature.size(0), -1), dim=-1, index=sim_indices)
+    sim_labels = torch.gather(
+        feature_labels.expand(feature.size(0), -1),
+        dim=-1,
+        index=sim_indices,
+    )
     sim_weight = (sim_weight / knn_t).exp()
 
-    one_hot_label = torch.zeros(feature.size(0) * knn_k, classes, device=sim_labels.device)
-    one_hot_label = one_hot_label.scatter(dim=-1, index=sim_labels.view(-1, 1), value=1.0)
+    one_hot_label = torch.zeros(
+        feature.size(0) * knn_k,
+        classes,
+        device=sim_labels.device,
+    )
+    one_hot_label = one_hot_label.scatter(
+        dim=-1,
+        index=sim_labels.view(-1, 1),
+        value=1.0,
+    )
     pred_scores = torch.sum(
         one_hot_label.view(feature.size(0), -1, classes) * sim_weight.unsqueeze(dim=-1),
-        dim=1
+        dim=1,
     )
     pred_labels = pred_scores.argsort(dim=-1, descending=True)
 
@@ -94,8 +104,14 @@ def model_train(
     num_classes,
     num_tabs,
     device,
-    lradj
+    lradj,
+    multilabel_threshold=0.5,
 ):
+    if not 0.0 <= multilabel_threshold <= 1.0:
+        raise ValueError(
+            f"multilabel_threshold must be in [0, 1], got {multilabel_threshold}."
+        )
+
     if loss_name in ["CrossEntropyLoss", "BCEWithLogitsLoss", "MultiLabelSoftMarginLoss"]:
         criterion = eval(f"torch.nn.{loss_name}")()
     elif loss_name == "TripletMarginLoss":
@@ -109,9 +125,15 @@ def model_train(
         raise ValueError(f"Loss function {loss_name} is not matched.")
 
     if lradj != "None":
-        scheduler = eval(f"torch.optim.lr_scheduler.{lradj}")(optimizer, step_size=30, gamma=0.74)
+        scheduler = eval(f"torch.optim.lr_scheduler.{lradj}")(
+            optimizer,
+            step_size=30,
+            gamma=0.74,
+        )
 
-    assert save_metric in eval_metrics, f"save_metric {save_metric} should be included in {eval_metrics}"
+    assert save_metric in eval_metrics, (
+        f"save_metric {save_metric} should be included in {eval_metrics}"
+    )
     metric_best_value = 0
     best_epoch = 0
 
@@ -150,12 +172,17 @@ def model_train(
         print(f"epoch {epoch}: train_loss = {train_loss}")
 
         if loss_name in ["TripletMarginLoss", "SupConLoss"]:
-            valid_true, valid_pred = knn_monitor(model, device, train_iter, valid_iter, num_classes, 10)
+            valid_true, valid_pred = knn_monitor(
+                model,
+                device,
+                train_iter,
+                valid_iter,
+                num_classes,
+                10,
+            )
         else:
             with torch.no_grad():
                 model.eval()
-                sum_loss = 0
-                sum_count = 0
                 valid_pred = []
                 valid_true = []
 
@@ -183,26 +210,17 @@ def model_train(
                 valid_pred = np.concatenate(valid_pred)
                 valid_true = np.concatenate(valid_true)
 
-        # For one-page datasets, positive_label=1 (monitored)
         if getattr(valid_true, "ndim", 1) == 2:
-            print(
-                "valid_score_stats:",
-                {
-                    "min": round(float(valid_pred.min()), 6),
-                    "mean": round(float(valid_pred.mean()), 6),
-                    "max": round(float(valid_pred.max()), 6),
-                    "p90": round(float(np.percentile(valid_pred, 90)), 6),
-                    "p95": round(float(np.percentile(valid_pred, 95)), 6),
-                    "p99": round(float(np.percentile(valid_pred, 99)), 6),
-                    "above_0.5": int((valid_pred >= 0.5).sum()),
-                    "total_scores": int(valid_pred.size),
-                },
-            )
             valid_result = multilabel_measurement(
-                valid_true, valid_pred, eval_metrics, num_tabs
+                valid_true,
+                valid_pred,
+                eval_metrics,
+                num_tabs,
+                threshold=multilabel_threshold,
             )
         else:
             valid_result = measurement(valid_true, valid_pred, eval_metrics, num_tabs)
+
         print(f"{epoch}: {valid_result}")
 
         if valid_result[save_metric] > metric_best_value:
@@ -226,8 +244,14 @@ def model_eval(
     ckp_path,
     scenario,
     num_tabs,
-    device
+    device,
+    multilabel_threshold=0.5,
 ):
+    if not 0.0 <= multilabel_threshold <= 1.0:
+        raise ValueError(
+            f"multilabel_threshold must be in [0, 1], got {multilabel_threshold}."
+        )
+
     if eval_method == "common":
         with torch.no_grad():
             model.eval()
@@ -238,6 +262,7 @@ def model_eval(
                 cur_X = cur_data[0].to(device, non_blocking=True)
                 cur_y = cur_data[1].to(device, non_blocking=True)
                 outs = model(cur_X)
+
                 if num_tabs == 1:
                     cur_pred = torch.argsort(outs, dim=1, descending=True)[:, 0]
                 else:
@@ -299,9 +324,16 @@ def model_eval(
         raise ValueError(f"Evaluation method {eval_method} is not matched.")
 
     if getattr(y_true, "ndim", 1) == 2:
-        result = multilabel_measurement(y_true, y_pred, eval_metrics, num_tabs)
+        result = multilabel_measurement(
+            y_true,
+            y_pred,
+            eval_metrics,
+            num_tabs,
+            threshold=multilabel_threshold,
+        )
     else:
         result = measurement(y_true, y_pred, eval_metrics, num_tabs)
+
     print(result)
 
     with open(out_file, "w") as fp:
@@ -320,7 +352,7 @@ def info_nce_loss(features, batch_size, device):
     labels = labels[~mask].view(labels.shape[0], -1)
     similarity_matrix = similarity_matrix[~mask].view(similarity_matrix.shape[0], -1)
     positives = similarity_matrix[labels.bool()].view(labels.shape[0], -1)
-    negatives = similarity_matrix[~labels.bool()].view(similarity_matrix.shape[0], -1)
+    negatives = similarity_matrix[~labels.bool()].view(labels.shape[0], -1)
     logits = torch.cat([positives, negatives], dim=1)
     labels = torch.zeros(logits.shape[0], dtype=torch.long).to(device)
     logits = logits / 0.5
@@ -357,7 +389,10 @@ def model_pretrian(model, optimizer, train_iter, train_epochs, out_file, batch_s
         for index, cur_data in enumerate(train_iter):
             cur_X, cur_y = cur_data[0], cur_data[1]
             cur_X = torch.cat(cur_X, dim=0)
-            cur_X = cur_X.view(cur_X.size(0), 1, cur_X.size(1)).float().to(device, non_blocking=True)
+            cur_X = cur_X.view(cur_X.size(0), 1, cur_X.size(1)).float().to(
+                device,
+                non_blocking=True,
+            )
 
             optimizer.zero_grad(set_to_none=True)
             features = model(cur_X)
