@@ -92,5 +92,38 @@ class TestLiveMixer(unittest.TestCase):
         self.assertEqual(metadata["real_cells_out"], 2)
 
 
+    def test_bounded_mode_pads_only_active_buckets(self):
+        trace = np.array([0.01, -0.02], dtype=np.float64)
+
+        _, metadata = mix_live_pool(
+            traces=[trace],
+            open_times=np.array([0.0]),
+            delta_t=0.01,
+            N_out=2,
+            N_in=2,
+            seed=2024,
+            mode="bounded",
+            padding_per_active_bucket=1,
+        )
+
+        self.assertGreater(metadata["dummy_cells"], 0)
+        self.assertLess(metadata["dummy_cells"], 4)
+        self.assertEqual(metadata["real_cells_out"], 2)
+
+
+    def test_multihot_pool_labels_are_unique(self):
+        labels = np.array([0, 0, 1, 1, 2, 2], dtype=np.int64)
+        rng = np.random.default_rng(2024)
+
+        selected_labels = rng.choice(
+            np.unique(labels),
+            size=3,
+            replace=False,
+        )
+
+        self.assertEqual(len(selected_labels), 3)
+        self.assertEqual(len(np.unique(selected_labels)), 3)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

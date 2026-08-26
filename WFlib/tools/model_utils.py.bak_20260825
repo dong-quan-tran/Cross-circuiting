@@ -5,7 +5,7 @@ import json
 import torch.nn.functional as F
 from pytorch_metric_learning import miners, losses
 from sklearn.metrics.pairwise import cosine_similarity
-from .evaluator import measurement, multilabel_measurement
+from .evaluator import measurement
 
 
 def knn_monitor(net, device, memory_data_loader, test_data_loader, num_classes, k=200, t=0.1):
@@ -165,7 +165,7 @@ def model_train(
                     outs = model(cur_X)
 
                     if loss_name in ["BCEWithLogitsLoss", "MultiLabelSoftMarginLoss"]:
-                        cur_pred = torch.sigmoid(outs)
+                        cur_pred = (torch.sigmoid(outs) >= 0.5).to(torch.int64)
                     elif loss_name == "CrossEntropyLoss":
                         cur_pred = torch.argsort(outs, dim=1, descending=True)[:, 0]
                     elif loss_name == "MultiCrossEntropyLoss":
@@ -184,25 +184,7 @@ def model_train(
                 valid_true = np.concatenate(valid_true)
 
         # For one-page datasets, positive_label=1 (monitored)
-        if getattr(valid_true, "ndim", 1) == 2:
-            print(
-                "valid_score_stats:",
-                {
-                    "min": round(float(valid_pred.min()), 6),
-                    "mean": round(float(valid_pred.mean()), 6),
-                    "max": round(float(valid_pred.max()), 6),
-                    "p90": round(float(np.percentile(valid_pred, 90)), 6),
-                    "p95": round(float(np.percentile(valid_pred, 95)), 6),
-                    "p99": round(float(np.percentile(valid_pred, 99)), 6),
-                    "above_0.5": int((valid_pred >= 0.5).sum()),
-                    "total_scores": int(valid_pred.size),
-                },
-            )
-            valid_result = multilabel_measurement(
-                valid_true, valid_pred, eval_metrics, num_tabs
-            )
-        else:
-            valid_result = measurement(valid_true, valid_pred, eval_metrics, num_tabs)
+        valid_result = measurement(valid_true, valid_pred, eval_metrics, num_tabs)
         print(f"{epoch}: {valid_result}")
 
         if valid_result[save_metric] > metric_best_value:
@@ -242,7 +224,7 @@ def model_eval(
                     cur_pred = torch.argsort(outs, dim=1, descending=True)[:, 0]
                 else:
                     if len(outs.shape) <= 2:
-                        cur_pred = torch.sigmoid(outs)
+                        cur_pred = (torch.sigmoid(outs) >= 0.5).to(torch.int64)
                     else:
                         cur_indices = torch.argmax(outs, dim=-1).cpu()
                         cur_pred = torch.zeros((cur_indices.shape[0], num_classes))
@@ -298,10 +280,7 @@ def model_eval(
     else:
         raise ValueError(f"Evaluation method {eval_method} is not matched.")
 
-    if getattr(y_true, "ndim", 1) == 2:
-        result = multilabel_measurement(y_true, y_pred, eval_metrics, num_tabs)
-    else:
-        result = measurement(y_true, y_pred, eval_metrics, num_tabs)
+    result = measurement(y_true, y_pred, eval_metrics, num_tabs)
     print(result)
 
     with open(out_file, "w") as fp:

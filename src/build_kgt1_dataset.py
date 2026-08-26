@@ -87,6 +87,7 @@ def mix_direction(
     capacity,
     seed,
     mode,
+    padding_per_active_bucket=0,
 ):
     if not cells:
         return [], [], 0, 0
@@ -137,7 +138,22 @@ def mix_direction(
         real_cells = eligible[:capacity]
         queue = eligible[capacity:]
 
-        for slot in range(capacity):
+        if mode == "full":
+            output_slots = capacity
+        else:
+            output_slots = len(real_cells)
+
+            if mode == "bounded" and real_cells:
+                output_slots += min(
+                    int(padding_per_active_bucket),
+                    capacity - len(real_cells),
+                )
+
+        dummy_sign = 1.0
+        if real_cells:
+            dummy_sign = 1.0 if real_cells[0]["size"] > 0 else -1.0
+
+        for slot in range(output_slots):
             output_time = bucket_start + (
                 (slot + 0.5) * delta_t / float(capacity)
             )
@@ -147,12 +163,7 @@ def mix_direction(
                 packets.append((output_time, cell["size"]))
                 delays.append(output_time - cell["time"])
                 real_count += 1
-
-            elif mode == "full":
-                dummy_sign = 1.0
-                if real_cells:
-                    dummy_sign = 1.0 if real_cells[0]["size"] > 0 else -1.0
-
+            else:
                 packets.append((output_time, dummy_sign * DATASIZE))
                 dummy_count += 1
 
@@ -201,6 +212,7 @@ def mix_live_pool(
     N_in,
     seed,
     mode,
+    padding_per_active_bucket=0,
 ):
     all_cells = []
     close_times = []
@@ -238,6 +250,7 @@ def mix_live_pool(
         N_out,
         seed + 1,
         mode,
+        padding_per_active_bucket,
     )
 
     in_packets, in_delays, in_real, in_dummy = mix_direction(
@@ -247,6 +260,7 @@ def mix_live_pool(
         N_in,
         seed + 2,
         mode,
+        padding_per_active_bucket,
     )
 
     mixed_packets = []
@@ -306,6 +320,7 @@ def build_split(
     seq_len,
     seed,
     progress_every,
+    padding_per_active_bucket,
 ):
     source_data = np.load(input_path)
     X_source = source_data["X"]
@@ -385,14 +400,27 @@ def build_split(
     for mixed_index in range(num_mixed):
         rng = np.random.default_rng(seed + mixed_index)
 
-        selected_indices = rng.choice(
-            source_count,
+        available_labels = np.unique(y_source)
+
+        if K > len(available_labels):
+            raise ValueError(
+                f"K={K} is larger than the number of available site labels="
+                f"{len(available_labels)}."
+            )
+
+        selected_labels = rng.choice(
+            available_labels,
             size=K,
             replace=False,
-        )
+        ).astype(np.int64)
+
+        selected_indices = np.empty(K, dtype=np.int64)
+
+        for label_position, label in enumerate(selected_labels):
+            candidate_indices = np.flatnonzero(y_source == label)
+            selected_indices[label_position] = rng.choice(candidate_indices)
 
         selected_traces = [X_source[index] for index in selected_indices]
-        selected_labels = y_source[selected_indices].astype(np.int64)
 
         open_times = make_open_times(
             K,
@@ -409,6 +437,7 @@ def build_split(
             N_in=N_in,
             seed=seed + mixed_index,
             mode=mode,
+            padding_per_active_bucket=padding_per_active_bucket,
         )
 
         X_mixed[mixed_index] = packets_to_cw_sequence(
@@ -536,7 +565,17 @@ def main():
     parser.add_argument("--metadata_path", required=True)
 
     parser.add_argument("--K", type=int, default=2)
-    parser.add_argument("--mode", choices=["concurrent", "scheduled", "full"], default="full")
+    parser.add_argument(
+        "--mode",
+        choices=["concurrent", "scheduled", "full", "bounded"],
+        default="bounded",
+    )
+    parser.add_argument(
+        "--padding_per_active_bucket",
+        type=int,
+        default=1,
+        help="Maximum dummy cells added in a bucket that emits real cells; used by bounded mode.",
+    )
     parser.add_argument(
         "--arrival_mode",
         choices=["simultaneous", "fixed", "uniform"],
@@ -575,6 +614,7 @@ def main():
         seq_len=args.seq_len,
         seed=args.seed,
         progress_every=args.progress_every,
+        padding_per_active_bucket=args.padding_per_active_bucket,
     )
 
 
