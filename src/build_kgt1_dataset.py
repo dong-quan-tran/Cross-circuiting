@@ -45,6 +45,7 @@ def packets_to_cw_sequence(packets, seq_len):
     ):
         if packet_index >= seq_len:
             break
+
         sequence[packet_index] = (
             1.0 if packet_size > 0 else -1.0
         ) * float(packet_time)
@@ -80,13 +81,31 @@ def mix_direction(
     capacity,
     seed,
     mode,
+    direction_sign,
     padding_per_active_bucket=0,
 ):
+    """
+    Schedule one traffic direction.
+
+    Returns
+    -------
+    packets : list[tuple[float, float, bool]]
+        Each entry is (output_time, signed_packet_size, is_real).
+    delays : list[float]
+        Per-real-cell scheduling delays.
+    real_count : int
+        Number of emitted real cells.
+    dummy_count : int
+        Number of emitted dummy cells.
+    """
     if not cells:
         return [], [], 0, 0
 
     if mode == "concurrent":
-        packets = [(cell["time"], cell["size"]) for cell in cells]
+        packets = [
+            (cell["time"], cell["size"], True)
+            for cell in cells
+        ]
         return packets, [0.0 for _ in cells], len(cells), 0
 
     if capacity <= 0:
@@ -97,7 +116,10 @@ def mix_direction(
         raise ValueError("padding_per_active_bucket must be nonnegative.")
 
     rng = Random(seed)
-    cells = sorted(cells, key=lambda cell: (cell["time"], cell["circuit_index"]))
+    cells = sorted(
+        cells,
+        key=lambda cell: (cell["time"], cell["circuit_index"]),
+    )
 
     packets = []
     delays = []
@@ -112,7 +134,10 @@ def mix_direction(
         bucket_end = bucket_start + delta_t
 
         arrivals = []
-        while future_index < len(cells) and cells[future_index]["time"] < bucket_end:
+        while (
+            future_index < len(cells)
+            and cells[future_index]["time"] < bucket_end
+        ):
             arrivals.append(cells[future_index])
             future_index += 1
 
@@ -142,20 +167,20 @@ def mix_direction(
         else:
             raise ValueError(f"Unknown mixing mode: {mode}")
 
-        dummy_sign = 1.0
-        if real_cells:
-            dummy_sign = 1.0 if real_cells[0]["size"] > 0 else -1.0
-
         for slot in range(output_slots):
-            output_time = bucket_start + ((slot + 0.5) * delta_t / float(capacity))
+            output_time = bucket_start + (
+                (slot + 0.5) * delta_t / float(capacity)
+            )
 
             if slot < len(real_cells):
                 cell = real_cells[slot]
-                packets.append((output_time, cell["size"]))
+                packets.append((output_time, cell["size"], True))
                 delays.append(max(0.0, output_time - cell["time"]))
                 real_count += 1
             else:
-                packets.append((output_time, dummy_sign * DATASIZE))
+                packets.append(
+                    (output_time, float(direction_sign) * DATASIZE, False)
+                )
                 dummy_count += 1
 
         bucket_index += 1
@@ -182,7 +207,9 @@ def overlap_fraction(open_times, close_times):
             continue
 
         midpoint = (left + right) / 2.0
-        active_count = np.sum((open_times <= midpoint) & (close_times > midpoint))
+        active_count = np.sum(
+            (open_times <= midpoint) & (close_times > midpoint)
+        )
         if active_count >= 2:
             overlap_duration += right - left
 
@@ -220,7 +247,8 @@ def mix_live_pool(
             "delay_p95": 0.0,
             "delay_max": 0.0,
             "mixed_duration": 0.0,
-            "completion_delay": 0.0,
+            "real_completion_delay": 0.0,
+            "trace_completion_extension": 0.0,
         }
 
     outgoing, incoming = split_by_direction(all_cells)
@@ -233,6 +261,7 @@ def mix_live_pool(
         N_out,
         seed + 1,
         mode,
+        1.0,
         padding_per_active_bucket,
     )
     in_packets, in_delays, in_real, in_dummy = mix_direction(
@@ -242,27 +271,60 @@ def mix_live_pool(
         N_in,
         seed + 2,
         mode,
+        -1.0,
         padding_per_active_bucket,
     )
 
-    mixed_packets = [
-        (packet_time, abs(packet_size)) for packet_time, packet_size in out_packets
+    mixed_packets_tagged = [
+        (packet_time, abs(packet_size), is_real)
+        for packet_time, packet_size, is_real in out_packets
     ]
-    mixed_packets.extend(
-        (packet_time, -abs(packet_size)) for packet_time, packet_size in in_packets
+    mixed_packets_tagged.extend(
+        (packet_time, -abs(packet_size), is_real)
+        for packet_time, packet_size, is_real in in_packets
     )
-    mixed_packets.sort(key=lambda packet: packet[0])
+    mixed_packets_tagged.sort(key=lambda packet: packet[0])
+
+    mixed_packets = [
+        (packet_time, packet_size)
+        for packet_time, packet_size, _ in mixed_packets_tagged
+    ]
 
     delays = np.asarray(out_delays + in_delays, dtype=np.float64)
     close_times = np.asarray(close_times, dtype=np.float64)
+    source_completion_time = float(np.max(close_times))
 
-    if mixed_packets:
-        mixed_times = np.asarray([packet[0] for packet in mixed_packets], dtype=np.float64)
+    if mixed_packets_tagged:
+        trace_completion_time = float(mixed_packets_tagged[-1][0])
+
+        real_packet_times = [
+            packet_time
+            for packet_time, _, is_real in mixed_packets_tagged
+            if is_real
+        ]
+        real_completion_time = (
+            float(max(real_packet_times))
+            if real_packet_times
+            else source_completion_time
+        )
+
+        mixed_times = np.asarray(
+            [packet_time for packet_time, _, _ in mixed_packets_tagged],
+            dtype=np.float64,
+        )
         mixed_duration = float(mixed_times.max() - mixed_times.min())
-        completion_delay = max(0.0, float(mixed_times.max() - np.max(close_times)))
+        real_completion_delay = max(
+            0.0,
+            real_completion_time - source_completion_time,
+        )
+        trace_completion_extension = max(
+            0.0,
+            trace_completion_time - source_completion_time,
+        )
     else:
         mixed_duration = 0.0
-        completion_delay = 0.0
+        real_completion_delay = 0.0
+        trace_completion_extension = 0.0
 
     return mixed_packets, {
         "close_times": close_times,
@@ -274,11 +336,23 @@ def mix_live_pool(
         "delay_p95": float(np.percentile(delays, 95)) if delays.size else 0.0,
         "delay_max": float(np.max(delays)) if delays.size else 0.0,
         "mixed_duration": mixed_duration,
-        "completion_delay": completion_delay,
+        "real_completion_delay": real_completion_delay,
+        "trace_completion_extension": trace_completion_extension,
     }
 
 
-def validate_arguments(K, mode, arrival_mode, stagger_seconds, delta_t, N_out, N_in, padding_per_active_bucket, seq_len, progress_every):
+def validate_arguments(
+    K,
+    mode,
+    arrival_mode,
+    stagger_seconds,
+    delta_t,
+    N_out,
+    N_in,
+    padding_per_active_bucket,
+    seq_len,
+    progress_every,
+):
     if K < 2:
         raise ValueError("K must be at least 2 for the K>1 study.")
     if mode not in {"concurrent", "scheduled", "full", "bounded"}:
@@ -351,10 +425,12 @@ def build_split(
     num_classes = int(np.max(y_source)) + 1
 
     if K > source_count:
-        raise ValueError(f"K={K} is larger than available source traces={source_count}.")
+        raise ValueError(
+            f"K={K} is larger than available source traces={source_count}."
+        )
     if K > len(available_labels):
         raise ValueError(
-            f"K={K} is larger than the number of available site labels={len(available_labels)}."
+            f"K={K} is larger than available site labels={len(available_labels)}."
         )
 
     if num_mixed is None:
@@ -393,7 +469,8 @@ def build_split(
 
     source_session_duration_all = np.zeros(num_mixed, dtype=np.float64)
     mixed_duration_all = np.zeros(num_mixed, dtype=np.float64)
-    completion_delay_all = np.zeros(num_mixed, dtype=np.float64)
+    real_completion_delay_all = np.zeros(num_mixed, dtype=np.float64)
+    trace_completion_extension_all = np.zeros(num_mixed, dtype=np.float64)
     bandwidth_overhead_all = np.zeros(num_mixed, dtype=np.float64)
     scheduler_latency_overhead_all = np.zeros(num_mixed, dtype=np.float64)
 
@@ -444,20 +521,29 @@ def build_split(
             padding_per_active_bucket=padding_per_active_bucket,
         )
 
-        X_mixed[mixed_index] = packets_to_cw_sequence(mixed_packets, seq_len)
+        X_mixed[mixed_index] = packets_to_cw_sequence(
+            mixed_packets,
+            seq_len,
+        )
         y_multihot[mixed_index, selected_labels] = 1
         groups[mixed_index] = selected_labels
         source_indices[mixed_index] = selected_indices
         open_times_all[mixed_index] = open_times
         close_times_all[mixed_index] = meta["close_times"]
 
-        original_cells = sum(int(np.count_nonzero(trace)) for trace in selected_traces)
+        original_cells = sum(
+            int(np.count_nonzero(trace))
+            for trace in selected_traces
+        )
         source_start = float(np.min(open_times))
         source_end = float(np.max(meta["close_times"]))
         source_session_duration = source_end - source_start
         mixed_duration = float(meta["mixed_duration"])
 
-        overlap_all[mixed_index] = overlap_fraction(open_times, meta["close_times"])
+        overlap_all[mixed_index] = overlap_fraction(
+            open_times,
+            meta["close_times"],
+        )
         orig_cells_all[mixed_index] = original_cells
         mixed_cells_all[mixed_index] = meta["mixed_cells"]
         dummy_cells_all[mixed_index] = meta["dummy_cells"]
@@ -470,7 +556,11 @@ def build_split(
 
         source_session_duration_all[mixed_index] = source_session_duration
         mixed_duration_all[mixed_index] = mixed_duration
-        completion_delay_all[mixed_index] = meta["completion_delay"]
+        real_completion_delay_all[mixed_index] = meta["real_completion_delay"]
+        trace_completion_extension_all[mixed_index] = meta[
+            "trace_completion_extension"
+        ]
+
         bandwidth_overhead_all[mixed_index] = (
             float(meta["mixed_cells"] / original_cells - 1.0)
             if original_cells > 0
@@ -487,16 +577,23 @@ def build_split(
             elapsed = time.time() - start_wall_time
             rate = completed / elapsed if elapsed > 0 else 0.0
             eta = (num_mixed - completed) / rate if rate > 0 else float("inf")
+
             print(
                 f"Generated {completed}/{num_mixed} | "
                 f"elapsed={elapsed / 60:.1f} min | "
                 f"ETA={eta / 60:.1f} min | "
                 f"mean overlap={np.mean(overlap_all[:completed]):.4f} | "
                 f"mean BW={np.mean(bandwidth_overhead_all[:completed]):.4f} | "
-                f"mean completion delay={np.mean(completion_delay_all[:completed]):.4f}s"
+                f"mean real completion delay="
+                f"{np.mean(real_completion_delay_all[:completed]):.4f}s"
             )
 
-    np.savez_compressed(output_path, X=X_mixed, y=y_multihot)
+    np.savez_compressed(
+        output_path,
+        X=X_mixed,
+        y=y_multihot,
+    )
+
     np.savez_compressed(
         metadata_path,
         groups=groups,
@@ -515,7 +612,8 @@ def build_split(
         delay_max=delay_max_all,
         source_session_duration=source_session_duration_all,
         mixed_duration=mixed_duration_all,
-        completion_delay=completion_delay_all,
+        real_completion_delay=real_completion_delay_all,
+        trace_completion_extension=trace_completion_extension_all,
         bw_overhead=bandwidth_overhead_all,
         scheduler_lat_overhead=scheduler_latency_overhead_all,
     )
@@ -528,7 +626,14 @@ def build_split(
         "Mean scheduler latency overhead: "
         f"{np.mean(scheduler_latency_overhead_all):.6f}"
     )
-    print(f"Mean completion delay (seconds): {np.mean(completion_delay_all):.6f}")
+    print(
+        "Mean real completion delay (seconds): "
+        f"{np.mean(real_completion_delay_all):.6f}"
+    )
+    print(
+        "Mean trace completion extension (seconds): "
+        f"{np.mean(trace_completion_extension_all):.6f}"
+    )
 
 
 def main():
